@@ -142,6 +142,44 @@ func TestMaterializeAuthRecordsReconcilesFilenameDuplicate(t *testing.T) {
 	}
 }
 
+func TestMaterializeAuthRecordsCanonicalizesRecordID(t *testing.T) {
+	key := "sk-reconcile-record-id"
+	digest := sha256.Sum256([]byte(key))
+	stableID := "opencode-go-key-" + hex.EncodeToString(digest[:])
+	path := filepath.Join(t.TempDir(), "Primary-2.json")
+	raw := []byte(`{"type":"opencode-go","id":"Primary-2.json","label":"Primary","api_key":"` + key + `","disabled":true}`)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeCaller{responder: func(method string, _ []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostAuthList {
+			return hostOK(hostAuthListResponse{Files: []pluginapi.HostAuthFileEntry{{
+				ID: "Primary-2.json", Name: "Primary-2.json", Provider: ProviderID, Path: path, Source: "file",
+			}}}), nil
+		}
+		return hostOK(map[string]any{}), nil
+	}}
+	m := NewManager(NewHostBridge(f.call))
+	if err := m.materializeAuthRecords(context.Background(), config.Config{APIKeys: []config.APIKey{{Value: key}}}); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.callsOf(pluginabi.MethodHostAuthSave)
+	if len(calls) != 1 {
+		t.Fatalf("reconciliation saves = %d, want 1", len(calls))
+	}
+	var wire pluginapi.HostAuthSaveRequest
+	if err := json.Unmarshal(calls[0].payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(wire.JSON, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved["id"] != stableID || saved["api_key"] != key || saved["label"] != "Primary" || saved["disabled"] != true {
+		t.Fatalf("reconciled record = %v", saved)
+	}
+}
+
 func TestMaterializeAuthRecordsLeavesCanonicalRecordUntouched(t *testing.T) {
 	key := "sk-reconcile-canonical"
 	digest := sha256.Sum256([]byte(key))

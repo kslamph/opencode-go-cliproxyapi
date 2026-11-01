@@ -329,6 +329,32 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 	return registrationEnvelope(), nil
 }
 
+func canonicalAuthRecord(raw []byte, stableID string) ([]byte, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return nil, fmt.Errorf("invalid auth record")
+	}
+	var currentID string
+	if encodedID, ok := object["id"]; ok {
+		if err := json.Unmarshal(encodedID, &currentID); err != nil {
+			return nil, fmt.Errorf("invalid auth record id")
+		}
+	}
+	if currentID == stableID {
+		return raw, nil
+	}
+	encodedID, err := json.Marshal(stableID)
+	if err != nil {
+		return nil, fmt.Errorf("encode auth record id")
+	}
+	object["id"] = encodedID
+	canonical, err := json.Marshal(object)
+	if err != nil {
+		return nil, fmt.Errorf("encode auth record")
+	}
+	return canonical, nil
+}
+
 // materializeAuthRecords makes CPA-visible auth files idempotently. Existing
 // records are discovered through CPA so their host-managed metadata is never
 // overwritten. The full key digest is non-secret and independent of config
@@ -369,11 +395,15 @@ func (m *Manager) materializeAuthRecords(ctx context.Context, cfg config.Config)
 			id := "opencode-go-key-" + hex.EncodeToString(idHash[:])
 			existing[id] = struct{}{}
 			if strings.TrimSpace(entry.ID) != "" {
+				canonicalRaw, errCanonicalize := canonicalAuthRecord(raw, id)
+				if errCanonicalize != nil {
+					return fmt.Errorf("invalid existing plugin auth record")
+				}
 				if _, already := reconcile[id]; !already {
 					reconcile[id] = struct {
 						name string
 						raw  []byte
-					}{name: filepath.Base(entry.Path), raw: raw}
+					}{name: filepath.Base(entry.Path), raw: canonicalRaw}
 				}
 			}
 		}
