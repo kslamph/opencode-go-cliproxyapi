@@ -651,8 +651,8 @@ func TestRegisterMetadataCarriesGitHubRepository(t *testing.T) {
 	}
 	var reg registrationResult
 	decodeResult(t, resp, &reg)
-	if reg.Metadata.GitHubRepository == "" {
-		t.Fatalf("metadata.GitHubRepository empty: host validPlugin would drop the plugin: %+v", reg.Metadata)
+	if reg.Metadata.GitHubRepository != "https://github.com/kslamph/opencode-go-cliproxyapi" {
+		t.Fatalf("metadata.GitHubRepository = %q, want operator fork", reg.Metadata.GitHubRepository)
 	}
 	// Metadata structs have no json tags; assert the Go field name marshals.
 	var env struct {
