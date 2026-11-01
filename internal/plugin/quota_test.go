@@ -1,7 +1,10 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -99,6 +102,69 @@ func TestAccountLabels(t *testing.T) {
 	}
 	if accountLabel(config.Config{}, "key", "", 0) != "OpenCode Go" {
 		t.Fatal("bad default name")
+	}
+}
+
+func TestMaterializeAuthRecordsReconcilesFilenameDuplicate(t *testing.T) {
+	key := "sk-reconcile-duplicate"
+	digest := sha256.Sum256([]byte(key))
+	stableID := "opencode-go-key-" + hex.EncodeToString(digest[:])
+	path := filepath.Join(t.TempDir(), "Primary-2.json")
+	raw := []byte(`{"type":"opencode-go","id":"` + stableID + `","label":"Primary","api_key":"` + key + `"}`)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeCaller{responder: func(method string, _ []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostAuthList {
+			return hostOK(hostAuthListResponse{Files: []pluginapi.HostAuthFileEntry{{
+				ID: "Primary-2.json", Name: "Primary-2.json", Provider: ProviderID, Path: path, Source: "file",
+			}}}), nil
+		}
+		return hostOK(map[string]any{}), nil
+	}}
+	m := NewManager(NewHostBridge(f.call))
+	if err := m.materializeAuthRecords(context.Background(), config.Config{APIKeys: []config.APIKey{{Value: key}}}); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.callsOf(pluginabi.MethodHostAuthSave)
+	if len(calls) != 1 {
+		t.Fatalf("reconciliation saves = %d, want 1", len(calls))
+	}
+	var wire pluginapi.HostAuthSaveRequest
+	if err := json.Unmarshal(calls[0].payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire.Name != "Primary-2.json" {
+		t.Fatalf("reconciliation filename = %q, want %q", wire.Name, "Primary-2.json")
+	}
+	if !bytes.Equal(wire.JSON, raw) {
+		t.Fatalf("reconciliation changed auth JSON: got %s want %s", wire.JSON, raw)
+	}
+}
+
+func TestMaterializeAuthRecordsLeavesCanonicalRecordUntouched(t *testing.T) {
+	key := "sk-reconcile-canonical"
+	digest := sha256.Sum256([]byte(key))
+	stableID := "opencode-go-key-" + hex.EncodeToString(digest[:])
+	path := filepath.Join(t.TempDir(), "Primary.json")
+	raw := []byte(`{"type":"opencode-go","id":"` + stableID + `","label":"Primary","api_key":"` + key + `"}`)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeCaller{responder: func(method string, _ []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostAuthList {
+			return hostOK(hostAuthListResponse{Files: []pluginapi.HostAuthFileEntry{{
+				ID: stableID, Name: "Primary.json", Provider: ProviderID, Path: path, Source: "file",
+			}}}), nil
+		}
+		return hostOK(map[string]any{}), nil
+	}}
+	m := NewManager(NewHostBridge(f.call))
+	if err := m.materializeAuthRecords(context.Background(), config.Config{APIKeys: []config.APIKey{{Value: key}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(f.callsOf(pluginabi.MethodHostAuthSave)); got != 0 {
+		t.Fatalf("canonical record saves = %d, want 0", got)
 	}
 }
 

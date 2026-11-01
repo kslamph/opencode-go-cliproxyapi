@@ -343,6 +343,10 @@ func (m *Manager) materializeAuthRecords(ctx context.Context, cfg config.Config)
 		return fmt.Errorf("list existing auth records: %w", err)
 	}
 	existing := make(map[string]struct{}, len(entries)*2)
+	reconcile := make(map[string]struct {
+		name string
+		raw  []byte
+	})
 	for _, entry := range entries {
 		// Before the auth manager is ready, v8 lists disk files without IDs.
 		// Recover identity from those host-reported paths to avoid duplicates
@@ -361,8 +365,17 @@ func (m *Manager) materializeAuthRecords(ctx context.Context, cfg config.Config)
 			if json.Unmarshal(raw, &record) != nil || record.APIKey == "" {
 				return fmt.Errorf("existing plugin auth record is invalid")
 			}
-			digest := sha256.Sum256([]byte(record.APIKey))
-			existing["opencode-go-key-"+hex.EncodeToString(digest[:])] = struct{}{}
+			idHash := sha256.Sum256([]byte(record.APIKey))
+			id := "opencode-go-key-" + hex.EncodeToString(idHash[:])
+			existing[id] = struct{}{}
+			if strings.TrimSpace(entry.ID) != "" {
+				if _, already := reconcile[id]; !already {
+					reconcile[id] = struct {
+						name string
+						raw  []byte
+					}{name: filepath.Base(entry.Path), raw: raw}
+				}
+			}
 		}
 		if name := strings.TrimSpace(entry.Name); name != "" {
 			existing[name] = struct{}{}
@@ -375,6 +388,18 @@ func (m *Manager) materializeAuthRecords(ctx context.Context, cfg config.Config)
 		digest := sha256.Sum256([]byte(key.Value))
 		hash := hex.EncodeToString(digest[:])
 		id := "opencode-go-key-" + hash
+		if repair, ok := reconcile[id]; ok {
+			if err := m.bridge.AuthSave(ctx, pluginapi.HostAuthSaveRequest{
+				Name: repair.name, JSON: repair.raw,
+			}); err != nil {
+				return err
+			}
+			delete(reconcile, id)
+			existing[id] = struct{}{}
+			existing[repair.name] = struct{}{}
+			debugTrace("reconciled auth record id=%s file=%s", id, repair.name)
+			continue
+		}
 		name := id + ".json"
 		if _, ok := existing[id]; ok {
 			continue
